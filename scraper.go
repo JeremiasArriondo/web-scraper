@@ -5,52 +5,84 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"github.com/gocolly/colly"
 )
 
+// product structure to keep the scraped data
 type Product struct {
 	Url, Image, Name, Price string
 }
 
 func main() {
-	var products []Product
 
+	// instantiate a new collector object
 	c := colly.NewCollector(
 		colly.AllowedDomains("www.scrapingcourse.com"),
 	)
 
-	c.OnRequest(func(r *colly.Request) {
-		fmt.Println("Visiting: ", r.URL)
+	// initialize the slice of structs that will contain the scraped data
+	var products []Product
+
+	// define a sync to filter visited URLs
+	var visitedUrls sync.Map
+
+	// set a global User Agent
+	c.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
+	// set up the proxy
+	err := c.SetProxy("http://35.185.196.38:3128")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// OnHTML callback for scraping product information
+	c.OnHTML("li.product", func(e *colly.HTMLElement) {
+
+		// initialize a new Product instance
+		product := Product{}
+
+		// scrape the target data
+		product.Url = e.ChildAttr("a", "href")
+		product.Image = e.ChildAttr("img", "src")
+		product.Name = e.ChildText(".product-name")
+		product.Price = e.ChildText(".price")
+
+		// add the product instance with scraped data to the list of products
+		products = append(products, product)
 	})
 
-	c.Visit("https://www.scrapingcourse.com/ecommerce")
+	// OnHTML callback for handling pagination
+	c.OnHTML("a.next", func(e *colly.HTMLElement) {
 
-	c.OnHTML(
-		"li.product", func(e *colly.HTMLElement) {
-			product := Product{}
-			// scrape the target data
-			product.Url = e.ChildAttr("a", "href")
-			product.Image = e.ChildAttr("img", "src")
-			product.Name = e.ChildText(".product-name")
-			product.Price = e.ChildText(".price")
+		// extract the next page URL from the next button
+		nextPage := e.Attr("href")
 
-			// add the product instance with scraped data to the list of products
-			products = append(products, product)
-		},
-	)
+		// check if the nextPage URL has been visited
+		if _, found := visitedUrls.Load(nextPage); !found {
+			fmt.Println("scraping:", nextPage)
+			// mark the URL as visited
+			visitedUrls.Store(nextPage, struct{}{})
+			// visit the next page
+			e.Request.Visit(nextPage)
+		}
+	})
 
+	// store the data to a CSV after extraction
 	c.OnScraped(func(r *colly.Response) {
+
+		// open the CSV file
 		file, err := os.Create("products.csv")
 		if err != nil {
-			log.Fatalln("Failed to create output CSV file: ", err)
+			log.Fatalln("Failed to create output CSV file", err)
 		}
 		defer file.Close()
 
 		// initialize a file writer
 		writer := csv.NewWriter(file)
 
-		// write headers to the CSV file
+		// write the CSV headers
 		headers := []string{
 			"Url",
 			"Image",
@@ -72,8 +104,9 @@ func main() {
 			// add a CSV record to the output file
 			writer.Write(record)
 		}
-		defer writer.Flush()
-	},
-	)
+		writer.Flush()
+	})
 
+	// open the target URL
+	c.Visit("https://www.scrapingcourse.com/ecommerce")
 }
